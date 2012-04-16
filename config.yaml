@@ -1,0 +1,6 @@
+elasticsearch:
+  host: localhost:9200
+
+hotspot: localhost:8080
+
+geoip: /usr/local/share/GeoIP/GeoLiteCity.dat
