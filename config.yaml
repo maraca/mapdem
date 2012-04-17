@@ -4,3 +4,6 @@ elasticsearch:
 hotspot: localhost:8080
 
 geoip: /usr/local/share/GeoIP/GeoLiteCity.dat
+
+maps:
+  folder: generated

@@ -1,163 +1,94 @@
-#!/usr/bin/python
-"""Generates random gps coordinates, and stores them in elastic search.
-The idea is to find which hot spots are near you.
+#!/usr/bin/env python
+"""Gets ip addresses from a file. Generate their Lat and Lon. Print them on a map.
 """
 
 __author__ = 'cozzi.martin@gmail.com'
 
 
+import csv
 import jsonlib
 import logging
-import operator
 import optparse
-import random
 import requests
 import sys
 import time
 import yaml
+import pygeoip
 
-top_left = (37.793508, -122.511978)
-bottom_right = (37.742485, -122.369156)
+from ipconverter import IpConverter
+from map import Map
 
-magnolia = ((37.77024, -122.445245), (37.770439,-122.445164))
-att_park = ((37.779042,-122.388489), (37.777838,-122.389927))
+from dateutil.parser import parse
 
-events = [magnolia, att_park]
+from encoder import Video
 
 def main():
     """Where the magic happens."""
 
-    options = parse_args(sys.argv)
-    # load configs
-    config_file = open(options.config, 'r') 
-    configs = yaml.load(config_file)
-    config_file.close()
+    options, configs = parse_args(sys.argv)
+    ip_reader = csv.reader(open(options.ips, 'rb'), delimiter=',')
+    ip_converter = IpConverter(configs)
+    width = options.width
+    height = options.height
+    color = 'black'
+    # Here we apply ratios, since the map will be croped later on.
+    width = int(width * 2.5)
+    height = int(height * 1.33333333) 
+    world_map = Map(width, height, color)
 
-    search = Search(configs) 
-    hotspot = 'http://%s' % configs.get('hotspot', 'localhost:8888')
+    roll = options.gen
+    current_roll = None
 
-    for i in range(options.count):
-        if i % 10 == 0: # every 10 inserts, we add a pic to an event
-            event = events[random.randint(0, len(events) - 1)]
-            new_lat = random.uniform(event[0][0], event[1][0]) 
-            new_lon = random.uniform(event[0][1], event[1][1]) 
-            coords = (new_lat, new_lon)
-            logging.debug('[random-event] %s', coords)
-        else:
-            coords = gen_random_coords()
+    for row in ip_reader:
+        try:
+            ip = proxy_filter(row[0])
+            timestamp = parse(row[1])
+            if current_roll is None:
+                current_roll = getattr(timestamp, roll)
+            elif current_roll != getattr(timestamp, roll) and\
+                    getattr(timestamp, roll) % options.gen_accuracy == 0:
+                current_roll = getattr(timestamp, roll)
+                # print current map to file, and generate new one.
+                world_map.render('%s/%s.jpg' % (configs['maps']['folder'],
+                    timestamp))
 
-        picture = {
-            "pin": {
-                "location": {
-                    "lat": coords[0],
-                    "lon": coords[1],
-                    }
-                }
-            }
+            data = ip_converter.get_gps_from_ip(ip)
+            if data is not None:
+                world_map.add_gps_to_map(data) 
+        except pygeoip.GeoIPError, error:
+            logging.error(error)
+        except ValueError, error:
+            logging.error(error)
 
-        res = search.post(picture, 'pin')
-        data = {'lat': coords[0], 'lon': coords[1]}
-        logging.debug('[insert] % s', picture)
-        requests.post(hotspot, data)
-        
-        if i % 10 == 0:
-            if is_a_hostpost(search, coords):
-                data['hotspot'] = True
-                requests.post(hotspot, data)
-                logging.debug('[hotspot] %s', coords)
+    world_map.render('%s/%s.jpg' % (configs['maps']['folder'],
+        timestamp))
+    
+    # generates video oO
+    video = Video(width, height) 
+    video.build(configs['maps']['folder'])
 
-
-class Search:
-
-    def __init__(self, config):
-        """Configs"""
-        self.config = config
-        self.elasticsearch = 'http://%s' % self.config["elasticsearch"]["host"]
-
-    def get(self, payload, object_type, index='pins'):
-        return self._query(requests.get, payload, object_type, index)
-
-    def post(self, payload, object_type, search=False, index='pins'):
-        return self._query(requests.post, payload, object_type, search, index)
-
-    def put(self, payload, object_type, index='pins'):
-        return self._query(requests.put, payload, object_type, index)
-
-
-    def _query(self, query_type, payload, object_type, search, index):
-        """Sends a post or get query to ElasticSearcg.
-
-        Object type should be made a list in the future.
-        """
-        url = '%s/%s/%s' % (self.elasticsearch, index, object_type)
-        if search:
-            url = '%s/_search' % url
-        res = self._parse_response(query_type(url, jsonlib.write(payload)))
-
-        logging.debug(res)
-        if res is not None:
-            return res 
-
-    def _parse_response(self, req):
-        """Parses a response."""
-
-        if req.status_code not in [200, 201]:
-            return None
-
-        return jsonlib.read(req.content)
- 
-
-def is_a_hostpost(search, point):
-    """Determines if something is going on around this point"""
-    query = {
-        "query": {
-            "filtered" : {
-                "query" : {
-                    "match_all" : {},
-                },
-                "filter" : {
-                    "geo_distance" : {
-                        "distance" : "0.05km",
-                        "pin.location" : {
-                            "lat" : point[0],
-                            "lon" : point[1]
-                        }
-                    }
-                }
-            }
-        }
-    } 
-
-    results = search.post(query, 'pin', search=True)
-    logging.debug('[query]: %s', jsonlib.write(query))
-    if results:
-        results = results.get('hits')
-        logging.debug('[results] : %s', results)
-        total = results.get('total')
-        if total > 10:
-            logging.info('[hotspot] %s', results)
-            return True
-
-    return False
-
-
-def gen_random_coords():
-    random_lat = random.uniform(top_left[0], bottom_right[0])
-    random_long = random.uniform(top_left[1], bottom_right[1])
-
-    return (random_lat, random_long)
+def proxy_filter(ips):
+    """Remove Proxies from the list of IPs"""
+    ips = ips.split(';')[0]
+    return ips.split(',')[0]
 
 
 def parse_args(argv):
     """Parses args from sys."""
     parser = optparse.OptionParser(usage='%prog [OPTIONS]', description=__doc__)
+    parser.add_option('--ips', dest='ips', help='File with Ips')
     parser.add_option('--config', dest='config', help='YAML config file')
     parser.add_option('--verbose', dest='verbose', action='store_true',
             default=False)
     parser.add_option('--stdin', dest='stdin', action='store_true',
             default=False)
     parser.add_option('--count', dest='count', type='int', default=5)
-
+    parser.add_option('--height', dest='height', type='int', default=1080)
+    parser.add_option('--width', dest='width', type='int', default=720)
+    parser.add_option('--gen', dest='gen', default='hour',
+            help='Generates pictures for every: minute, hour, day')
+    parser.add_option('--gen-accuracy', dest='gen_accuracy', type='int', 
+            default=1, help='Every x minute/hour/day')
 
     options, args = parser.parse_args(argv)
     if len(args) > 1:
@@ -174,7 +105,12 @@ def parse_args(argv):
     stream_handler.setFormatter(
         logging.Formatter('%(asctime)s [%(levelname)s]: %(message)s'))
     logger.addHandler(stream_handler)
-    return options
+
+    config_file = open(options.config, 'r') 
+    configs = yaml.load(config_file)
+    config_file.close()
+
+    return options, configs
 
 
 if __name__ == '__main__':
