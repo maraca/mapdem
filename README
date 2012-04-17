@@ -1,0 +1,2 @@
+./main.py --ips=dump/small_ip.dump --config=config.yaml --gen=minute --gen-accuracy=1
+
