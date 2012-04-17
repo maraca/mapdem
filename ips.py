@@ -18,7 +18,9 @@ import pygeoip
 from ipconverter import IpConverter
 from map import Map
 
+from dateutil.parser import parse
 
+from encoder import Video
 
 def main():
     """Where the magic happens."""
@@ -28,17 +30,37 @@ def main():
     ip_converter = IpConverter(configs)
     world_map = Map(1440, 1800, 'black')
 
+    roll = options.gen
+    current_roll = None
     for row in ip_reader:
         try:
             ip = proxy_filter(row[0])
+            timestamp = parse(row[1])
+            if current_roll is None:
+                current_roll = getattr(timestamp, roll)
+            elif current_roll != getattr(timestamp, roll) and\
+                    getattr(timestamp, roll) % options.gen_count == 0:
+                current_roll = getattr(timestamp, roll)
+                # print current map to file, and generate new one.
+                world_map.render('%s/%s.jpg' % (configs['maps']['folder'],
+                    timestamp))
+                # world_map = Map(1440, 1800, 'black')
+
             data = ip_converter.get_gps_from_ip(ip)
             if data is not None:
                 world_map.add_gps_to_map(data) 
                 # requests.post(hotspot, data)
         except pygeoip.GeoIPError, error:
             logging.error(error)
+        except ValueError, error:
+            logging.error(error)
 
-    world_map.render()
+    width, height = world_map.render('%s/%s.jpg' % (configs['maps']['folder'],
+        timestamp))
+    
+    # generates video oO
+    video = Video(width, height) 
+    video.build(configs['maps']['folder'])
 
 def proxy_filter(ips):
     """Remove Proxies from the list of IPs"""
@@ -56,7 +78,10 @@ def parse_args(argv):
     parser.add_option('--stdin', dest='stdin', action='store_true',
             default=False)
     parser.add_option('--count', dest='count', type='int', default=5)
-
+    parser.add_option('--gen', dest='gen', default='hour',
+            help='Generates pictures for every: minute, hour, day')
+    parser.add_option('--gen-count', dest='gen_count', type='int', default=1,
+            help='Every x minute/hour/day')
 
     options, args = parser.parse_args(argv)
     if len(args) > 1:

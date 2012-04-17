@@ -27,11 +27,10 @@ class Map:
         x, y  = (self.lon_to_x(coords['lon']), self.lat_to_y(coords['lat']))
         # init mins and maxs
 
-        self._set_low_and_max_x_y(x, y)
         deep_sky_blue = (0, 191, 255)
         self.pixel_map[x, y] = deep_sky_blue
 
-    def _crop(self):
+    def _crop(self, path_to_file):
         """Crops the picture."""
         top_lat = 75
         min_lat = -60
@@ -43,7 +42,9 @@ class Map:
 
         box = (left, top, left + width, top + height)
         area = self.map.crop(box)
-        area.save('cropped.jpg', 'JPEG', quality=95)
+        area.save(path_to_file, 'JPEG', quality=95)
+
+        return (width, height)
 
     def _add_x_y_min_max(self):
         """Adds red points for x and y"""
@@ -104,12 +105,10 @@ class Map:
                     self.pixel_map[x, y] = thitle
         """
 
-    def render(self):
-        """Renders the map"""
+    def render(self, path_to_file):
+        """Renders the map, and return file size."""
         
-        self._crop()
-        self.map.save('world_map.jpg', 'JPEG', quality=95)
-        return True
+        return self._crop(path_to_file)
 
     def lon_to_x(self, lon):
         """Returns x on the map."""
